@@ -45,6 +45,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
 
     if (!req.file) {
+
       return res.status(400).json({
         error: "Please upload PDF",
       });
@@ -52,6 +53,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 
     console.log("PDF Upload Started");
 
+    // LOAD PDF
     const loader = new PDFLoader(req.file.path);
 
     const rawDocs = await loader.load();
@@ -70,7 +72,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
     console.log("Chunks:", docs.length);
 
 
-    // STORE
+    // STORE IN QDRANT
     await QdrantVectorStore.fromDocuments(
       docs,
       embeddings,
@@ -111,6 +113,17 @@ app.post("/api/chat", async (req, res) => {
 
     const { query } = req.body;
 
+    console.log("QUESTION:", query);
+
+    if (!query) {
+
+      return res.status(400).json({
+        error: "Query is required",
+      });
+    }
+
+
+    // CONNECT TO VECTOR DB
     const vectorStore =
       await QdrantVectorStore.fromExistingCollection(
         embeddings,
@@ -124,20 +137,37 @@ app.post("/api/chat", async (req, res) => {
         }
       );
 
+    console.log("Connected To Qdrant");
+
+
+    // RETRIEVER
     const retriever = vectorStore.asRetriever({
-      k: 3,
+      k: 5,
     });
 
     const results = await retriever.invoke(query);
 
+    console.log("RESULTS:", results);
+
+
+    // HANDLE EMPTY RESULTS
+    if (!results || results.length === 0) {
+
+      return res.json({
+        answer: "No relevant content found in PDF.",
+      });
+    }
+
+
+    // CONTEXT
     const context = results
       .map(doc => doc.pageContent)
       .join("\n\n");
 
-    console.log("Context:", context);
+    console.log("CONTEXT:", context);
 
 
-    // GEMINI CHAT MODEL
+    // GEMINI MODEL
     const model = new ChatGoogleGenerativeAI({
       apiKey: process.env.GEMINI_API_KEY,
 
@@ -146,14 +176,20 @@ app.post("/api/chat", async (req, res) => {
       temperature: 0,
     });
 
+    console.log("Calling Gemini");
+
+
+    // GENERATE RESPONSE
     const response = await model.invoke([
       [
         "system",
         `
-Answer ONLY from this context.
+You are a helpful AI assistant.
 
-If answer is not in context,
-say "Answer not found in document."
+Answer ONLY from the provided context.
+
+If the answer exists in the context,
+summarize it clearly and naturally.
 
 CONTEXT:
 ${context}
@@ -162,7 +198,11 @@ ${context}
       ["human", query],
     ]);
 
-    let answer = "";
+    console.log("RAW RESPONSE:", response);
+
+
+    // SAFE RESPONSE EXTRACTION
+    let answer = "No answer found.";
 
     if (typeof response.content === "string") {
 
@@ -175,6 +215,10 @@ ${context}
         .join(" ");
     }
 
+    console.log("FINAL ANSWER:", answer);
+
+
+    // SEND RESPONSE
     res.json({
       answer,
     });
@@ -184,7 +228,7 @@ ${context}
     console.error("CHAT ERROR:", err);
 
     res.status(500).json({
-      error: err.message,
+      error: err.message || "Something went wrong",
     });
   }
 
@@ -192,7 +236,7 @@ ${context}
 
 
 // ========================================
-// SERVER
+// START SERVER
 // ========================================
 const PORT = process.env.PORT || 3000;
 
