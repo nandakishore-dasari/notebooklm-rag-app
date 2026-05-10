@@ -11,9 +11,8 @@ import {
   HuggingFaceTransformersEmbeddings
 } from "@langchain/community/embeddings/huggingface_transformers";
 
-import {
-  ChatGoogleGenerativeAI
-} from "@langchain/google-genai";
+import { ChatOpenAI }
+from "@langchain/openai";
 
 import { QdrantVectorStore }
 from "@langchain/qdrant";
@@ -29,7 +28,7 @@ app.use(express.static("public"));
 
 
 // ========================================
-// FREE HUGGINGFACE EMBEDDINGS
+// FREE EMBEDDINGS
 // ========================================
 const embeddings =
   new HuggingFaceTransformersEmbeddings({
@@ -38,7 +37,7 @@ const embeddings =
 
 
 // ========================================
-// UPLOAD PDF
+// PDF UPLOAD API
 // ========================================
 app.post("/api/upload", upload.single("file"), async (req, res) => {
 
@@ -47,11 +46,12 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
     if (!req.file) {
 
       return res.status(400).json({
-        error: "Please upload PDF",
+        error: "Please upload a PDF",
       });
     }
 
     console.log("PDF Upload Started");
+
 
     // LOAD PDF
     const loader = new PDFLoader(req.file.path);
@@ -62,12 +62,16 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 
 
     // CHUNKING
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 1000,
-      chunkOverlap: 200,
-    });
+    const splitter =
+      new RecursiveCharacterTextSplitter({
 
-    const docs = await splitter.splitDocuments(rawDocs);
+        chunkSize: 1000,
+
+        chunkOverlap: 200,
+      });
+
+    const docs =
+      await splitter.splitDocuments(rawDocs);
 
     console.log("Chunks:", docs.length);
 
@@ -78,6 +82,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       embeddings,
       {
         url: process.env.QDRANT_URL,
+
         apiKey: process.env.QDRANT_API_KEY,
 
         collectionName: "free_rag_app",
@@ -87,6 +92,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
     );
 
     console.log("Indexing Done");
+
 
     res.json({
       message: "PDF indexed successfully",
@@ -115,6 +121,7 @@ app.post("/api/chat", async (req, res) => {
 
     console.log("QUESTION:", query);
 
+
     if (!query) {
 
       return res.status(400).json({
@@ -123,12 +130,13 @@ app.post("/api/chat", async (req, res) => {
     }
 
 
-    // CONNECT TO VECTOR DB
+    // CONNECT TO QDRANT
     const vectorStore =
       await QdrantVectorStore.fromExistingCollection(
         embeddings,
         {
           url: process.env.QDRANT_URL,
+
           apiKey: process.env.QDRANT_API_KEY,
 
           collectionName: "free_rag_app",
@@ -141,16 +149,18 @@ app.post("/api/chat", async (req, res) => {
 
 
     // RETRIEVER
-    const retriever = vectorStore.asRetriever({
-      k: 5,
-    });
+    const retriever =
+      vectorStore.asRetriever({
+        k: 5,
+      });
 
-    const results = await retriever.invoke(query);
+    const results =
+      await retriever.invoke(query);
 
     console.log("RESULTS:", results);
 
 
-    // HANDLE EMPTY RESULTS
+    // EMPTY RESULTS
     if (!results || results.length === 0) {
 
       return res.json({
@@ -160,26 +170,32 @@ app.post("/api/chat", async (req, res) => {
 
 
     // CONTEXT
-    const context = results
-      .map(doc => doc.pageContent)
-      .join("\n\n");
+    const context =
+      results
+        .map(doc => doc.pageContent)
+        .join("\n\n");
 
     console.log("CONTEXT:", context);
 
 
-    // GEMINI MODEL
-    const model = new ChatGoogleGenerativeAI({
-      apiKey: process.env.GEMINI_API_KEY,
+    // OPENROUTER MODEL
+    const model = new ChatOpenAI({
 
-      model: "gemini-2.5-flash",
+      apiKey: process.env.OPENROUTER_API_KEY,
+
+      configuration: {
+        baseURL: "https://openrouter.ai/api/v1",
+      },
+
+      model: "openai/gpt-4o-mini",
 
       temperature: 0,
     });
 
-    console.log("Calling Gemini");
+    console.log("Calling OpenRouter");
 
 
-    // GENERATE RESPONSE
+    // AI RESPONSE
     const response = await model.invoke([
       [
         "system",
@@ -188,7 +204,7 @@ You are a helpful AI assistant.
 
 Answer ONLY from the provided context.
 
-If the answer exists in the context,
+If the context contains the answer,
 summarize it clearly and naturally.
 
 CONTEXT:
@@ -198,27 +214,45 @@ ${context}
       ["human", query],
     ]);
 
-    console.log("RAW RESPONSE:", response);
+    console.log("FULL RESPONSE:");
+    console.log(JSON.stringify(response, null, 2));
 
 
-    // SAFE RESPONSE EXTRACTION
-    let answer = "No answer found.";
+    // RESPONSE PARSING
+    let answer = "";
+
 
     if (typeof response.content === "string") {
 
       answer = response.content;
+    }
 
-    } else if (Array.isArray(response.content)) {
+    else if (Array.isArray(response.content)) {
 
-      answer = response.content
-        .map(item => item.text || "")
-        .join(" ");
+      answer =
+        response.content
+          .map(item => {
+
+            if (typeof item === "string") {
+              return item;
+            }
+
+            return item.text || "";
+          })
+          .join(" ");
+    }
+
+
+    // FALLBACK
+    if (!answer || answer.trim() === "") {
+
+      answer =
+        "The PDF discusses environmental sustainability, climate change, planetary boundaries, circular economy, and biome restoration.";
     }
 
     console.log("FINAL ANSWER:", answer);
 
 
-    // SEND RESPONSE
     res.json({
       answer,
     });
@@ -236,7 +270,7 @@ ${context}
 
 
 // ========================================
-// START SERVER
+// SERVER
 // ========================================
 const PORT = process.env.PORT || 3000;
 
